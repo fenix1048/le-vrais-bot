@@ -6,6 +6,23 @@ import aiohttp
 import asyncio
 from datetime import datetime
 
+print("🚀 Démarrage du bot...")
+
+# Vérification des variables d'environnement
+token = os.environ.get("token_bot_aternos")
+openrouter_key = os.environ.get("OPENROUTER_KEY")
+
+if not token:
+    print("❌ ERREUR: token_bot_aternos manquant!")
+    exit(1)
+else:
+    print("✅ Token Discord trouvé")
+
+if not openrouter_key:
+    print("⚠️ ATTENTION: OPENROUTER_KEY manquant")
+else:
+    print("✅ Clé OpenRouter trouvée")
+
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
@@ -22,10 +39,13 @@ derniers_statuts = {}
 
 SALON_ID = 1388916796211466250
 OWNER_ID = 1352768109399900191
-OPENROUTER_KEY = os.environ.get("OPENROUTER_KEY")
+OPENROUTER_KEY = openrouter_key
 pending_questions = {}
 
 async def get_ai_response(prompt):
+    if not OPENROUTER_KEY:
+        return "❌ Clé OpenRouter manquante"
+    
     url = "https://openrouter.ai/api/v1/chat/completions"
     headers = {
         "Authorization": f"Bearer {OPENROUTER_KEY}",
@@ -46,9 +66,23 @@ async def get_ai_response(prompt):
 @bot.event
 async def on_ready():
     print(f"✅ Connecté en tant que {bot.user}")
+    print(f"🏠 Bot présent dans {len(bot.guilds)} serveur(s)")
+    
+    # Test du salon
+    canal = bot.get_channel(SALON_ID)
+    if canal:
+        print(f"✅ Salon trouvé: {canal.name}")
+        try:
+            await canal.send("🤖 Bot redémarré avec succès!")
+        except Exception as e:
+            print(f"❌ Erreur envoi message test: {e}")
+    else:
+        print("❌ Salon introuvable!")
+    
     print("🔍 Démarrage de la surveillance des serveurs...")
     try:
         verifier_serveurs.start()
+        print("✅ Tâche de surveillance démarrée")
     except Exception as e:
         print("❌ Erreur tâche de vérif :", e)
 
@@ -56,7 +90,7 @@ async def on_ready():
 async def verifier_serveurs():
     canal = bot.get_channel(SALON_ID)
     if canal is None:
-        print("❌ Salon introuvable.")
+        print("❌ Salon introuvable dans la tâche.")
         return
 
     for nom, adresse in serveurs.items():
@@ -82,7 +116,7 @@ async def verifier_serveurs():
             statut_actuel = False
             
             if derniers_statuts.get(nom) != statut_actuel:
-                print(f"🔴 Serveur {nom} maintenant OFFLINE")
+                print(f"🔴 Serveur {nom} maintenant OFFLINE: {e}")
                 derniers_statuts[nom] = statut_actuel
             
             if nom in messages_envoyés and messages_envoyés[nom]:
@@ -156,7 +190,10 @@ async def auto_reply_ai(owner_id, original_msg, prompt):
         pass
 
 if __name__ == "__main__":
+    print("🎯 Tentative de connexion...")
     try:
-        bot.run(os.environ["token_bot_aternos"])
+        bot.run(token)
     except Exception as e:
         print("❌ Erreur au lancement :", e)
+        import traceback
+        traceback.print_exc()
