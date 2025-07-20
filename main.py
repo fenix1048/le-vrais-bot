@@ -9,7 +9,7 @@ from datetime import datetime
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
-intents.typing = True  # Nécessaire pour détecter les frappes
+intents.typing = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 serveurs = {
@@ -20,10 +20,9 @@ serveurs = {
 messages_envoyés = {}
 
 SALON_ID = 1388916796211466250
-OWNER_ID = 1352768109399900191  # ← remplace par TON ID
+OWNER_ID = 1352768109399900191
 OPENROUTER_KEY = os.environ.get("OPENROUTER_KEY")
-
-pending_questions = {}  # {owner_id: {message, prompt, task, typing_started, typing_context}}
+pending_questions = {}
 
 async def get_ai_response(prompt):
     url = "https://openrouter.ai/api/v1/chat/completions"
@@ -35,7 +34,6 @@ async def get_ai_response(prompt):
         "model": "mistralai/mistral-7b-instruct",
         "messages": [{"role": "user", "content": prompt}]
     }
-
     async with aiohttp.ClientSession() as session:
         async with session.post(url, json=payload, headers=headers) as resp:
             if resp.status == 200:
@@ -50,7 +48,7 @@ async def on_ready():
     try:
         verifier_serveurs.start()
     except Exception as e:
-        print("❌ Erreur dans la tâche de vérif serveurs :", e)
+        print("❌ Erreur tâche de vérif :", e)
 
 @tasks.loop(seconds=10)
 async def verifier_serveurs():
@@ -59,25 +57,47 @@ async def verifier_serveurs():
         print("❌ Salon introuvable.")
         return
 
+    serveurs_en_ligne = []
+    
+    # Vérifier quels serveurs sont en ligne
     for nom, adresse in serveurs.items():
         try:
             serveur = JavaServer.lookup(adresse)
             statut = serveur.status()
-
-            try:
-                query = serveur.query()
-                joueurs = statut.players.online
-                message_texte = f"🟢 Le serveur **{nom}** est en ligne avec **{joueurs} joueur(s)**."
-            except:
-                raise Exception("Réponse query échouée")
-
+            joueurs = statut.players.online
+            serveurs_en_ligne.append((nom, joueurs))
+        except Exception as e:
+            pass
+    
+    # Si aucun serveur en ligne, supprimer tous les messages
+    if not serveurs_en_ligne:
+        for nom in serveurs.keys():
             if nom in messages_envoyés and messages_envoyés[nom]:
+                try:
+                    await messages_envoyés[nom].delete()
+                except:
+                    pass
+                messages_envoyés[nom] = None
+        return
+    
+    # Gérer les serveurs en ligne
+    for nom, joueurs in serveurs_en_ligne:
+        message_texte = f"🟢 Le serveur **{nom}** est en ligne avec **{joueurs} joueur(s)**."
+        
+        if nom in messages_envoyés and messages_envoyés[nom]:
+            try:
                 await messages_envoyés[nom].edit(content=message_texte)
-            else:
+            except:
+                # Si le message n'existe plus, on en crée un nouveau
                 msg = await canal.send(message_texte)
                 messages_envoyés[nom] = msg
-
-        except:
+        else:
+            msg = await canal.send(message_texte)
+            messages_envoyés[nom] = msg
+    
+    # Supprimer les messages des serveurs qui ne sont plus en ligne
+    for nom in serveurs.keys():
+        if nom not in [s[0] for s in serveurs_en_ligne]:
             if nom in messages_envoyés and messages_envoyés[nom]:
                 try:
                     await messages_envoyés[nom].delete()
@@ -90,21 +110,14 @@ async def on_message(message):
     if message.author == bot.user:
         return
 
-    # Réception de ta réponse privée
     if isinstance(message.channel, discord.DMChannel) and message.author.id == OWNER_ID:
         if message.author.id in pending_questions:
             data = pending_questions.pop(message.author.id)
             data['task'].cancel()
-            
-            # Arrêter l'indicateur de frappe
-            if 'typing_context' in data and data['typing_context']:
-                data['typing_context'].__aexit__(None, None, None)
 
             if message.content.strip() == "1":
-                # Montrer qu'on tape pendant la requête IA
-                async with data['message'].channel.typing():
-                    response = await get_ai_response(data['prompt'])
-                    await data['message'].channel.send(response)
+                response = await get_ai_response(data['prompt'])
+                await data['message'].channel.send(response)
             elif message.content.startswith("!"):
                 await data['message'].channel.send(message.content[1:].strip())
 
@@ -115,20 +128,15 @@ async def on_message(message):
             await owner.send(
                 f"📩 Une question a été posée : `{prompt}`\n"
                 f"Réponds avec `1` pour IA ou `!` pour une réponse personnalisée.\n"
-                f"⏳ Tu as 8 secondes pour commencer à taper."
+                f"⏳ Tu as 10 secondes pour commencer à taper."
             )
 
-            # Démarrer l'indicateur de frappe dans le canal original
-            typing_context = message.channel.typing()
-            await typing_context.__aenter__()
-
-            task = asyncio.create_task(auto_reply_ai(OWNER_ID, message, prompt, typing_context))
+            task = asyncio.create_task(auto_reply_ai(OWNER_ID, message, prompt))
             pending_questions[OWNER_ID] = {
                 "message": message,
                 "prompt": prompt,
                 "task": task,
-                "typing_started": None,
-                "typing_context": typing_context
+                "typing_started": None
             }
     else:
         await bot.process_commands(message)
@@ -137,40 +145,31 @@ async def on_message(message):
 async def on_typing(channel, user, when):
     if isinstance(channel, discord.DMChannel) and user.id == OWNER_ID:
         if OWNER_ID in pending_questions:
-            # Marque le moment où tu as commencé à taper
             pending_questions[OWNER_ID]['typing_started'] = datetime.utcnow()
 
-async def auto_reply_ai(owner_id, original_msg, prompt, typing_context):
+async def auto_reply_ai(owner_id, original_msg, prompt):
     try:
-        await asyncio.sleep(8)
-
+        await asyncio.sleep(10)
         data = pending_questions.get(owner_id)
         if not data:
             return
 
         typing_time = data.get("typing_started")
-        if typing_time and (datetime.utcnow() - typing_time).total_seconds() < 25:
-            # Tu as commencé à taper dans le délai → on attend encore un peu
-            task = asyncio.create_task(auto_reply_ai(owner_id, original_msg, prompt, typing_context))
+        if typing_time and (datetime.utcnow() - typing_time).total_seconds() < 15:
+            task = asyncio.create_task(auto_reply_ai(owner_id, original_msg, prompt))
             data["task"] = task
             data["typing_started"] = None
             return
 
-        # Pas de frappe → réponse IA (le typing continue automatiquement)
         pending_questions.pop(owner_id)
         response = await get_ai_response(prompt)
         await original_msg.channel.send(response)
-        
-        # Arrêter l'indicateur de frappe après l'envoi
-        await typing_context.__aexit__(None, None, None)
 
     except asyncio.CancelledError:
-        # Arrêter l'indicateur de frappe si la tâche est annulée
-        if typing_context:
-            await typing_context.__aexit__(None, None, None)
+        pass
 
 if __name__ == "__main__":
     try:
         bot.run(os.environ["token_bot_aternos"])
     except Exception as e:
-        print("❌ Erreur au lancement du bot :", e)
+        print("❌ Erreur au lancement :", e)
